@@ -1,0 +1,319 @@
+<!doctype html>
+
+<meta charset="utf-8">
+<link rel="stylesheet" href="http://yui.yahooapis.com/pure/0.6.0/pure-min.css">
+<script src="uglify.js"></script>
+
+<style>
+    body {
+        min-width: 960px;
+        max-width: 1200px;
+
+        margin: 0 auto;
+    }
+
+    #left, #right {
+        width: calc(50% - 22px);
+        height: 400px;
+
+        font-family: monospace;
+    }
+
+    #computeDiff {
+        width: 100%;
+    }
+
+    #errors {
+        border-radius: 4px;
+        padding: 4px;
+        background-color: rgba(255, 0, 0, 0.3);
+        color: red;
+    }
+
+    #errors:empty {
+        display: none;
+    }
+
+    .error {
+        margin: 6px 10px;
+    }
+</style>
+
+<h1>
+    nmd &mdash; Node Module Diffs
+</h1>
+
+<center>
+    <textarea id="left"></textarea>
+    <textarea id="right"></textarea>
+
+    <br>
+    <br>
+
+    <button id="computeDiff">
+        Diff
+    </button>
+</center>
+
+<div id="results" class="hidden">
+    <h2>
+        Results
+    </h2>
+
+    <div id="errors"></div>
+
+    <ul id="resultList"></ul>
+</div>
+
+<script>
+    var $ = document.querySelector.bind(document);
+    var $$ = document.querySelectorAll.bind(document);
+
+    HTMLElement.prototype.$ = HTMLElement.prototype.querySelector;
+    HTMLElement.prototype.$$ = HTMLElement.prototype.querySelectorAll;
+
+    var els = {};
+
+    els.left = $('#left');
+    els.right = $('#right');
+
+    els.results = $('#results');
+    els.errors = $('#errors');
+    els.resultList = $('#resultList');
+
+    function clearErrors() {
+        els.errors.innerHTML = '';
+    }
+
+    function hasErrors() {
+        return (els.errors.innerHTML !== '');
+    }
+
+    function renderError(msg, classes) {
+        classes = classes || 'error';
+
+        var error = document.createElement('div');
+
+        classes.split(' ').forEach(function(class_) {
+            error.classList.add(class_);
+        });
+
+        error.textContent = msg;
+
+        els.errors.appendChild(error);
+    }
+
+    function clearResultList() {
+        els.resultList.innerHTML = '';
+    }
+
+    function makeFn(src) {
+        var maybeStrict = '';
+
+        if(src.startsWith('"use strict"') || src.startsWith('\'use strict\'')) {
+            maybeStrict = '"use strict;"\n\n';
+        }
+
+        return new Function(
+            maybeStrict
+            + 'var module = { exports: {} }, exports = module.exports;\n\n'
+            + src
+            + '\n\nreturn module.exports;'
+        );
+    }
+
+    $('#computeDiff').addEventListener('click', function() {
+        var exports = {};
+
+        clearErrors();
+
+        clearResultList();
+
+        if(['left', 'right'].every(function(side) {
+            return (els[side].value === '');
+        })) {
+            els.results.classList.add('hidden');
+
+            return;
+        }
+
+        els.results.classList.remove('hidden');
+
+        ['left', 'right'].forEach(function(side) {
+            var el = els[side];
+            var fn;
+
+            try {
+                fn = makeFn(el.value);
+            }
+            catch(error) {
+                renderError("Could not parse " + side + " module: " + error.message);
+                return;
+            }
+
+            try {
+                exports[side] = fn();
+            }
+            catch(error) {
+                renderError("Could not run " + side + " module: " + error.message);
+            }
+        });
+
+        if(hasErrors()) {
+            clearResultList();
+            return;
+        }
+
+        try {
+            computeDiff(exports.left, exports.right);
+        }
+        catch(error) {
+            renderError(error.message);
+
+            clearResultList();
+
+            throw error;
+        }
+    });
+
+    function computeDiff(a, b, path, resultList) {
+        path = path || [];
+        resultList = resultList || els.resultList;
+
+        new Set(
+            Object.keys(a).concat(Object.keys(b))
+        ).forEach(function(key) {
+            var aVal = a[key];
+            var bVal = b[key];
+
+            if(aVal === bVal) {
+                appendResult(key, aVal, bVal, 'eq', resultList);
+                return;
+            }
+
+            var aValType = typeOf(aVal);
+            var bValType = typeOf(bVal);
+
+            if(aValType !== bValType) {
+                appendResult(key, aVal, bVal, 'neq', resultList);
+                return;
+            }
+
+            switch(aValType) {
+                case 'Number':
+                case 'String':
+                    appendResult(
+                        key, aVal, bVal, (aVal === bVal)? 'eq' : 'neq', resultList
+                    );
+                    break;
+
+                case 'Object':
+                case 'Array':
+                    computeDiff(
+                        aVal, bVal, path.concat([key]),
+                        appendResultSubList(key, resultList)
+                    );
+
+                    break;
+
+                case 'Date':
+                    appendResult(
+                        key, aVal, bVal,
+                        (aVal.getTime() === bVal.getTime())? 'eq' : 'neq',
+                        resultList
+                    );
+                    break;
+
+                case 'Function':
+                    appendResult(
+                        key, aVal, bVal,
+                        equivalentFns(aVal, bVal)? 'eq' : 'neq',
+                        resultList
+                    );
+                    break;
+
+                default:
+                    throw new Error(
+                        "Unsupported value type under left.exports."
+                        + path.concat([key]).join('.')
+                        + " (" + aValType + ")"
+                    );
+
+                    break;
+            }
+        });
+    }
+
+    function appendResult(key, a, b, classes, resultList) {
+        var li = document.createElement('li');
+
+        classes.split(' ').forEach(function(class_) {
+            if(!class_) {
+                return;
+            }
+
+            li.classList.add(class_);
+        });
+
+        li.innerHTML = (
+            '<div class="key"></div>'
+            + '<div class="aVal"></div>'
+            + '<div class="bVal"></div>'
+        );
+
+        li.$('.key').textContent = key;
+        li.$('.aVal').textContent = a.toString();
+        li.$('.bVal').textContent = b.toString();
+
+        resultList.appendChild(li);
+    }
+
+    function appendResultSubList(key, resultList) {
+        var li = document.createElement('li');
+
+        li.innerHTML = '<div class="key"></div>';
+
+        li.$('.key').textContent = key;
+
+        var subList = document.createElement('ul');
+
+        li.appendChild(subList);
+
+        resultList.appendChild(li);
+
+        return subList;
+    }
+
+    function equivalentFns(a, b) {
+        var fns = {
+            a: a,
+            b: b,
+        };
+
+        Object.keys(fns).forEach(function(key) {
+            fns[key] = minify(fns[key]);
+        });
+
+        return fns.a === fns.b;
+    }
+
+    function minify(fn) {
+        var ast = UglifyJS.parse('fn = ' + fn.toString());
+
+        ast.figure_out_scope();
+
+        var compressor = new UglifyJS.Compressor();
+
+        ast = ast.transform(compressor);
+
+        ast.figure_out_scope();
+        ast.compute_char_frequency();
+        ast.mangle_names();
+
+        return ast.print_to_string();
+    }
+
+    function typeOf(val) {
+      return ({}).toString.call(val).match(/\s([a-zA-Z]+)/)[1];
+    }
+</script>

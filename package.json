@@ -10,5 +10,11 @@
   },
   "bugs": {
     "url": "https://github.com/n2liquid/nmd/issues"
+  },
+  "scripts": {
+    "install": "uglifyjs --self -o uglify.js"
+  },
+  "dependencies": {
+    "uglify-js": "^2.6.1"
   }
 }
